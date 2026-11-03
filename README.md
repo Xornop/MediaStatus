@@ -58,7 +58,7 @@ To build locally instead, use Gradle 8.7 with JDK 17 and the Android SDK (API 34
 ## Install
 
 1. Sideload `mediastatus.apk` on the TV (for example with the Downloader app or `adb install`).
-2. If installation is blocked, allow **Install unknown apps** for the app you used to open the APK. If Play Protect blocks it, choose **More details → Install anyway**.
+2. If installation is blocked, allow **Install unknown apps** for the app you used to open the APK. If Play Protect blocks it, choose **More details → Install anyway**, or disable Play Protect in Play Store > Profile icon > Play Protect settings
 3. Open **Media Status**.
 
 ## Grant notification access
