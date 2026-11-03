@@ -123,6 +123,3 @@ Combine this with the Android TV Remote integration for power and button control
 - **Sensor missing in Home Assistant:** run *Developer tools → YAML → Check configuration*, restart Home Assistant and check the logs for `rest` errors.
 - **State always `idle`:** the app you are using may not publish a media session. Try another app, such as YouTube or Netflix.
 
-## License
-
-Choose a license for your repository (for example MIT) and add a `LICENSE` file.
