@@ -1,11 +1,17 @@
 package nl.xornop.mediastatus;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.ComponentName;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
 import android.media.session.PlaybackState;
+import android.os.Handler;
+import android.os.Looper;
 import android.service.notification.NotificationListenerService;
 
 import org.json.JSONObject;
@@ -14,34 +20,69 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class MediaListener extends NotificationListenerService {
 
     static final int PORT = 8099;
+    static final String CHANNEL = "mediastatus";
     static volatile String json = "{\"state\":\"idle\"}";
 
     private MediaSessionManager msm;
     private ComponentName cn;
-    private final List<MediaController> watched = new ArrayList<>();
-    private ServerSocket server;
+    private final List<MediaController> watched = new CopyOnWriteArrayList<>();
+    private volatile ServerSocket server;
+    private final Handler main = new Handler(Looper.getMainLooper());
+
+    private final Runnable refresh = new Runnable() {
+        @Override public void run() {
+            try {
+                if (msm != null) rebuild(msm.getActiveSessions(cn));
+            } catch (Exception ignored) {}
+            main.postDelayed(this, 15000);
+        }
+    };
 
     private final MediaController.Callback cb = new MediaController.Callback() {
-        @Override public void onPlaybackStateChanged(PlaybackState s) { update(); }
-        @Override public void onMetadataChanged(MediaMetadata m) { update(); }
-        @Override public void onSessionDestroyed() { update(); }
+        @Override public void onPlaybackStateChanged(PlaybackState s) { build(); }
+        @Override public void onMetadataChanged(MediaMetadata m) { build(); }
+        @Override public void onSessionDestroyed() {
+            main.post(refresh);
+        }
     };
 
     private final MediaSessionManager.OnActiveSessionsChangedListener sessionsListener =
             this::rebuild;
 
     @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        goForeground();
+        return START_STICKY;
+    }
+
+    private void goForeground() {
+        try {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            nm.createNotificationChannel(new NotificationChannel(
+                    CHANNEL, "Media Status", NotificationManager.IMPORTANCE_MIN));
+            Notification n = new Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(android.R.drawable.ic_media_play)
+                    .setContentTitle("Media Status active")
+                    .build();
+            startForeground(1, n);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
     public void onListenerConnected() {
+        try { startForegroundService(new Intent(this, MediaListener.class)); } catch (Exception ignored) {}
         msm = getSystemService(MediaSessionManager.class);
         cn = new ComponentName(this, MediaListener.class);
         msm.addOnActiveSessionsChangedListener(sessionsListener, cn);
         rebuild(msm.getActiveSessions(cn));
+        main.removeCallbacks(refresh);
+        main.postDelayed(refresh, 15000);
         startServer();
     }
 
@@ -58,6 +99,7 @@ public class MediaListener extends NotificationListenerService {
     }
 
     private void stop() {
+        main.removeCallbacks(refresh);
         try { if (msm != null) msm.removeOnActiveSessionsChangedListener(sessionsListener); } catch (Exception ignored) {}
         for (MediaController c : watched) c.unregisterCallback(cb);
         watched.clear();
@@ -74,7 +116,7 @@ public class MediaListener extends NotificationListenerService {
                 watched.add(c);
             }
         }
-        update();
+        build();
     }
 
     private static String mapState(PlaybackState s) {
@@ -89,11 +131,11 @@ public class MediaListener extends NotificationListenerService {
         }
     }
 
-    private void update() {
+    // Builds the status from the live controllers every time it is called.
+    private String build() {
         MediaController pick = null;
         for (MediaController c : watched) {
-            String st = mapState(c.getPlaybackState());
-            if (st.equals("playing")) { pick = c; break; }
+            if (mapState(c.getPlaybackState()).equals("playing")) { pick = c; break; }
         }
         if (pick == null) {
             for (MediaController c : watched) {
@@ -120,6 +162,7 @@ public class MediaListener extends NotificationListenerService {
             }
             json = o.toString();
         } catch (Exception ignored) {}
+        return json;
     }
 
     private String label(String pkg) {
@@ -135,14 +178,14 @@ public class MediaListener extends NotificationListenerService {
         if (server != null) return;
         new Thread(() -> {
             try {
-                server = new ServerSocket(PORT);
-                ServerSocket s = server;
+                ServerSocket s = new ServerSocket(PORT);
+                server = s;
                 while (!s.isClosed()) {
                     try (Socket c = s.accept()) {
                         c.setSoTimeout(2000);
                         byte[] buf = new byte[1024];
                         try { c.getInputStream().read(buf); } catch (Exception ignored) {}
-                        byte[] body = json.getBytes(StandardCharsets.UTF_8);
+                        byte[] body = build().getBytes(StandardCharsets.UTF_8);
                         String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                                 + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n";
                         OutputStream out = c.getOutputStream();
