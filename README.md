@@ -51,7 +51,10 @@ The project builds without a local Android SDK by using GitHub Actions.
 3. Select **Build APK** and click **Run workflow**.
 4. When the run finishes, download the **mediastatus-apk** artifact (requires being logged in to GitHub). It contains `mediastatus.apk`.
 
-To publish a release with the APK attached, create a release with a tag starting with `v` (for example `v1.0`). The workflow builds the APK and attaches it automatically.
+A normal build only produces the artifact above; it does not create a release. A release (with `mediastatus.apk` attached) is made in two cases:
+
+- **Bump `versionName`** in `app/build.gradle` (and `versionCode`) and push or merge that to `main`. The workflow then creates release `v<versionName>`, for example `v1.2`.
+- **Push a tag** starting with `v`, for example `git tag v1.2` and then `git push origin v1.2`, or create a release with a new `v…` tag on GitHub's Releases page.
 
 To build locally instead, use Gradle 8.7 with JDK 17 and the Android SDK (API 34), then run `gradle assembleDebug`. The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
