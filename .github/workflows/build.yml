@@ -12,12 +12,41 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
     steps:
       # Actions are pinned to a full commit SHA (a tag can be moved to other code);
       # Dependabot keeps these up to date (.github/dependabot.yml).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 2
+      # Decide whether this run makes a GitHub release:
+      # - a pushed tag like v1.2           -> release with that tag
+      # - a push to main that changes versionName in app/build.gradle
+      #                                    -> release with tag v<versionName>
+      # - anything else                    -> only a build (APK as artifact)
+      - id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          version_of() { sed -n "s/^ *versionName *['\"]\([^'\"]*\)['\"].*/\1/p" | head -n1; }
+          now=$(version_of < app/build.gradle)
+          tag=""
+          if [ "$REF_TYPE" = tag ]; then
+            tag="$REF_NAME"
+          elif [ "$EVENT" = push ] && [ "$REF_NAME" = main ] && [ -n "$now" ]; then
+            git fetch --quiet --depth=1 origin "$BEFORE" 2>/dev/null || true
+            before=$(git show "$BEFORE:app/build.gradle" 2>/dev/null | version_of || true)
+            if [ -n "$before" ] && [ "$before" != "$now" ]; then
+              tag="v$now"
+            fi
+          fi
+          echo "versionName=$now release_tag=${tag:-<none>}"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
@@ -33,7 +62,7 @@ jobs:
           path: mediastatus.apk
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.build.outputs.release_tag != ''
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -44,4 +73,7 @@ jobs:
           name: mediastatus-apk
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: ${{ needs.build.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}  # creates the tag on this commit if it doesn't exist yet
+          generate_release_notes: true
           files: mediastatus.apk
