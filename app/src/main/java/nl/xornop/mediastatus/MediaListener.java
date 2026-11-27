@@ -22,17 +22,22 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MediaListener extends NotificationListenerService {
 
     static final int PORT = 8099;
     static final String CHANNEL = "mediastatus";
+    // Clients are served in parallel, so one slow or idle connection can't block the others.
+    static final int MAX_CLIENTS = 8;
     static volatile String json = "{\"state\":\"idle\"}";
 
     private MediaSessionManager msm;
     private ComponentName cn;
     private final List<MediaController> watched = new CopyOnWriteArrayList<>();
     private volatile ServerSocket server;
+    private volatile ExecutorService clients;
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private final Runnable refresh = new Runnable() {
@@ -105,6 +110,8 @@ public class MediaListener extends NotificationListenerService {
         watched.clear();
         try { if (server != null) server.close(); } catch (Exception ignored) {}
         server = null;
+        if (clients != null) clients.shutdownNow();
+        clients = null;
     }
 
     private void rebuild(List<MediaController> list) {
@@ -176,25 +183,45 @@ public class MediaListener extends NotificationListenerService {
 
     private void startServer() {
         if (server != null) return;
+        final ExecutorService pool = Executors.newFixedThreadPool(MAX_CLIENTS);
+        clients = pool;
         new Thread(() -> {
             try {
                 ServerSocket s = new ServerSocket(PORT);
                 server = s;
                 while (!s.isClosed()) {
-                    try (Socket c = s.accept()) {
-                        c.setSoTimeout(2000);
-                        byte[] buf = new byte[1024];
-                        try { c.getInputStream().read(buf); } catch (Exception ignored) {}
-                        byte[] body = build().getBytes(StandardCharsets.UTF_8);
-                        String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                                + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n";
-                        OutputStream out = c.getOutputStream();
-                        out.write(head.getBytes(StandardCharsets.UTF_8));
-                        out.write(body);
-                        out.flush();
-                    } catch (Exception ignored) {}
+                    final Socket c;
+                    try {
+                        c = s.accept();
+                    } catch (Exception e) {
+                        continue; // closed by stop(), or a transient accept error
+                    }
+                    try {
+                        pool.execute(() -> handle(c));
+                    } catch (Exception e) {
+                        try { c.close(); } catch (Exception ignored) {}
+                    }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                // Port could not be opened: drop this pool so a later startServer() can retry.
+                pool.shutdownNow();
+                if (clients == pool) clients = null;
+            }
         }, "mediastatus-http").start();
+    }
+
+    private void handle(Socket socket) {
+        try (Socket c = socket) {
+            c.setSoTimeout(2000);
+            byte[] buf = new byte[1024];
+            try { c.getInputStream().read(buf); } catch (Exception ignored) {}
+            byte[] body = build().getBytes(StandardCharsets.UTF_8);
+            String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n";
+            OutputStream out = c.getOutputStream();
+            out.write(head.getBytes(StandardCharsets.UTF_8));
+            out.write(body);
+            out.flush();
+        } catch (Exception ignored) {}
     }
 }
